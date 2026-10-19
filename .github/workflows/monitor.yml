@@ -1,0 +1,38 @@
+name: monitor
+on:
+  schedule: [{ cron: "*/5 * * * *" }]
+  workflow_dispatch:
+    inputs:
+      simular_queda: { description: "Simular queda de um endereço de teste (1 = sim)", default: "0" }
+concurrency: { group: monitor, cancel-in-progress: false }
+permissions: { contents: write }
+jobs:
+  checar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Buscar estado anterior
+        run: |
+          git fetch origin estado --depth=1 2>/dev/null && git show origin/estado:estado.json > estado.json 2>/dev/null || echo '{}' > estado.json
+      - name: Checar
+        id: checar
+        continue-on-error: true
+        env:
+          MONITOR_ALVOS: ${{ secrets.MONITOR_ALVOS }}
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          WHATSAPP_DESTINO: ${{ secrets.WHATSAPP_DESTINO }}
+          SIMULAR_QUEDA: ${{ github.event.inputs.simular_queda }}
+        run: node monitor.mjs
+      - name: Guardar estado (só se mudou)
+        run: |
+          git fetch origin estado --depth=1 2>/dev/null && git show origin/estado:estado.json > /tmp/antigo.json 2>/dev/null || echo '{}' > /tmp/antigo.json
+          if ! diff -q <(jq -S . /tmp/antigo.json) <(jq -S . estado.json) >/dev/null; then
+            d=$(mktemp -d); cp estado.json $d/; cd $d
+            git init -q -b estado; git config user.name monitor; git config user.email monitor@users.noreply.github.com
+            git add estado.json; git commit -qm "estado"; git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" estado
+          fi
+      - name: Resultado da rodada
+        if: steps.checar.outcome == 'failure'
+        run: exit 1
